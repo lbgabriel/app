@@ -1,0 +1,126 @@
+import pandas as pd
+import numpy as np
+from sklearn.model_selection import train_test_split
+from sklearn.tree import DecisionTreeRegressor
+from sklearn.linear_model import LinearRegression
+from sklearn.metrics import mean_squared_error, r2_score
+import streamlit as st
+import seaborn as sns
+import matplotlib.pyplot as plt
+
+# Cargar datos
+players = pd.read_csv("C:\\Users\\gabol\\Desktop\\TFM_NBA\\DF-PLAYERS.csv")
+
+# Lista de columnas que deseas procesar
+columnas_procesar = ['FG', 'FGA', 'FG%', '3P', '3PA', '3P%', 'FT', 'FTA', 'FT%', 'ORB', 'DRB', 'TRB', 'AST', 'STL', 'BLK', 'TOV', 'PF', 'PTS']
+
+# Calculamos el promedio para cada jugador solo en esas columnas
+promedio_por_jugador = players.groupby('Player Name')[columnas_procesar].transform(lambda x: x.fillna(x.mean()))
+
+# Luego, rellenamos cualquier valor faltante en esas columnas con los valores promedio correspondientes
+df_asis = players.copy()
+df_asis[columnas_procesar] = df_asis[columnas_procesar].fillna(promedio_por_jugador)
+
+# Calcular la media acumulativa para un jugador específico
+def calcular_media_acumulativa(df):
+    new_columns = []
+    columnas = columnas_procesar  # Definimos columnas aquí
+    for col in columnas:
+        new_col = col + '_mean'
+        new_columns.append(df[col].expanding().mean().rename(new_col))
+    new_df = pd.concat(new_columns, axis=1)
+    return new_df
+
+# Aplicación Streamlit
+st.title("NBA Player Stats Explorer")
+st.write("Esta aplicación predice los puntos y asistencias de jugadores de la NBA en los playoffs utilizando diferentes modelos de regresión.")
+
+# Panel de control
+st.sidebar.header("User Input Features")
+year_selected = st.sidebar.selectbox("Year", options=sorted(players['Period'].unique()))
+player_selected = st.sidebar.selectbox("Player", options=players['Player Name'].unique())
+
+# Filtrar datos basado en selección
+filtered_data = players[(players['Period'] == year_selected) & (players['Player Name'] == player_selected)]
+
+# Verificar si hay datos para el jugador seleccionado
+if filtered_data.empty:
+    st.write(f"No data available for {player_selected} in {year_selected}.")
+else:
+    st.header(f"Datos Filtrados para {player_selected} en {year_selected}")
+    st.dataframe(filtered_data)
+
+    # Calcular media acumulativa para el jugador seleccionado
+    new_df = calcular_media_acumulativa(filtered_data)
+
+    # Seleccionar las columnas deseadas
+    columnas_disponibles = [col for col in columnas_procesar if col + '_mean' in new_df.columns]
+    luka_work = new_df[[col + '_mean' for col in columnas_disponibles]]
+
+    # Separar en variables predictoras y objetivo
+    X, y = luka_work.iloc[:, 1:].values, luka_work.iloc[:, 0].values 
+    X_train2, X_test2, y_train2, y_test2 = train_test_split(X, y, test_size=0.3)
+
+    # Entrenar y evaluar el modelo de DecisionTreeRegressor
+    best_mae = float('inf')
+    best_depth = None
+    for depth in range(1, 250):
+        clf = DecisionTreeRegressor(max_depth=depth)
+        clf.fit(X_train2, y_train2)
+        tpredictions = clf.predict(X_test2)
+        t_error = np.abs(tpredictions - y_test2)
+        mae = t_error.mean()
+        if mae < best_mae:
+            best_mae = mae
+            best_depth = depth
+
+    clf = DecisionTreeRegressor(max_depth=best_depth)
+    clf.fit(X_train2, y_train2)
+    tree_predictions = clf.predict(X_test2)
+
+    # Entrenar y evaluar el modelo de LinearRegression
+    reg = LinearRegression()
+    reg.fit(X_train2, y_train2)
+    lr_predictions = reg.predict(X_test2)
+    lr_mse = mean_squared_error(y_test2, lr_predictions)
+    lr_r2 = r2_score(y_test2, lr_predictions)
+
+    st.header("Evolución del Jugador a lo largo del tiempo")
+    fig, ax = plt.subplots(figsize=(10, 6))
+    for col in columnas_disponibles:
+        ax.plot(new_df.index, new_df[col + '_mean'], label=col + '_mean')
+    ax.set_xlabel("Partidos")
+    ax.set_ylabel("Valores")
+    ax.set_title(f"Evolución de las Estadísticas de {player_selected}")
+    ax.legend()
+    st.pyplot(fig)
+
+    st.header("Modelo de Decision Tree Regressor")
+    st.write(f"La mejor profundidad encontrada es: {best_depth}")
+    st.write(f"El error absoluto medio mínimo es: {best_mae}")
+
+    st.header("Modelo de Linear Regression")
+    st.write(f"El MSE del modelo es: {lr_mse}")
+    st.write(f"El R2 del modelo es: {lr_r2}")
+
+    st.header("Comparación de Predicciones")
+    fig, ax = plt.subplots(figsize=(10, 6))
+    ax.plot(y_test2, label="Valores Reales")
+    ax.plot(tree_predictions, label="Predicciones Decision Tree", linestyle='--')
+    ax.plot(lr_predictions, label="Predicciones Linear Regression", linestyle=':')
+    ax.legend()
+    st.pyplot(fig)
+
+    st.header("Distribución de Errores (Decision Tree)")
+    tree_error_distribution = np.abs(tree_predictions - y_test2)
+    fig, ax = plt.subplots()
+    sns.histplot(tree_error_distribution, kde=True, ax=ax)
+    ax.set_title("Distribución de Errores (Decision Tree)")
+    st.pyplot(fig)
+
+    st.header("Distribución de Errores (Linear Regression)")
+    lr_error_distribution = np.abs(lr_predictions - y_test2)
+    fig, ax = plt.subplots()
+    sns.histplot(lr_error_distribution, kde=True, ax=ax)
+    ax.set_title("Distribución de Errores (Linear Regression)")
+    st.pyplot(fig)
